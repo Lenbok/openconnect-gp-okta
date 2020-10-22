@@ -36,7 +36,7 @@ def post_json(s, url, data):
         headers={'Content-Type': 'application/json'}))
     return r.json()
 
-def okta_auth(s, domain, username, password, totp_key):
+def okta_auth(s, domain, username, password, totp_key, totp_now):
     r = post_json(s, 'https://{}/api/v1/authn'.format(domain),
         {'username': username, 'password': password})
 
@@ -65,7 +65,9 @@ def okta_auth(s, domain, username, password, totp_key):
                 url = factor['_links']['verify']['href']
                 r = post_json(s, url, {'stateToken': r['stateToken']})
                 assert r['status'] == 'MFA_CHALLENGE'
-                if totp_key is None:
+                if totp_now:
+                    code = totp_now
+                elif totp_key is None:
                     code = input('One-time code for {} ({}): '.format(factor['provider'], factor['vendorName']))
                 else:
                     code = pyotp.TOTP(totp_key).now()
@@ -77,13 +79,13 @@ def okta_auth(s, domain, username, password, totp_key):
     assert r['status'] == 'SUCCESS'
     return r['sessionToken']
 
-def okta_saml(s, saml_req_url, username, password, totp_key):
+def okta_saml(s, saml_req_url, username, password, totp_key, totp_now):
     domain = urllib.parse.urlparse(saml_req_url).netloc
 
     # Just to set DT cookie
     check(s.get(saml_req_url))
 
-    token = okta_auth(s, domain, username, password, totp_key)
+    token = okta_auth(s, domain, username, password, totp_key, totp_now)
 
     r = check(s.get('https://{}/login/sessionCookieRedirect'.format(domain),
         params={'token': token, 'redirectUrl': saml_req_url}))
@@ -101,8 +103,9 @@ def complete_saml(s, saml_resp_url, saml_resp_data):
 @click.option('--username')
 @click.option('--password')
 @click.option('--totp-key')
+@click.option('--totp-now')
 @click.option('--sudo/--no-sudo', default=False)
-def main(gateway, openconnect_args, username, password, totp_key, sudo):
+def main(gateway, openconnect_args, username, password, totp_key, totp_now, sudo):
     if (totp_key is not None) and (pyotp is None):
         print('--totp-key requires pyotp!', file=sys.stderr)
         sys.exit(1)
@@ -114,7 +117,7 @@ def main(gateway, openconnect_args, username, password, totp_key, sudo):
 
     with requests.Session() as s:
         saml_req_url = prelogin(s, gateway)
-        saml_resp_url, saml_resp_data = okta_saml(s, saml_req_url, username, password, totp_key)
+        saml_resp_url, saml_resp_data = okta_saml(s, saml_req_url, username, password, totp_key, totp_now)
         saml_username, prelogin_cookie = complete_saml(s, saml_resp_url, saml_resp_data)
 
     subprocess_args = [
